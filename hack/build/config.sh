@@ -15,6 +15,7 @@
 CONTROLLER="cdi-controller"
 IMPORTER="cdi-importer"
 CLONER="cdi-cloner"
+UPLOADER="cdi-uploader"
 
 BINARIES="cmd/${CONTROLLER} cmd/${IMPORTER}"
 CDI_PKGS="cmd/ pkg/ test/"
@@ -22,8 +23,9 @@ CDI_PKGS="cmd/ pkg/ test/"
 CONTROLLER_MAIN="cmd/${CONTROLLER}"
 IMPORTER_MAIN="cmd/${IMPORTER}"
 CLONER_MAIN="cmd/${CLONER}"
+UPLOADER_MAIN="cmd/${UPLOADER}"
 
-DOCKER_IMAGES="cmd/${CONTROLLER} cmd/${IMPORTER} cmd/${CLONER}"
+DOCKER_IMAGES="cmd/${CONTROLLER} cmd/${IMPORTER} cmd/${CLONER} cmd/${UPLOADER}"
 DOCKER_REPO=${DOCKER_REPO:-kubevirt}
 DOCKER_TAG=${DOCKER_TAG:-latest}
 

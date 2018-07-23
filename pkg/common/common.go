@@ -16,6 +16,8 @@ const (
 	CDI_LABEL_VALUE        = "containerized-data-importer"
 	CDI_LABEL_SELECTOR     = CDI_LABEL_KEY + "=" + CDI_LABEL_VALUE
 
+	CDI_COMPONENT_LABEL = "cdi.kubevirt.io"
+
 	// host file constants:
 	IMPORTER_WRITE_DIR  = "/data"
 	IMPORTER_WRITE_FILE = "disk.img"
