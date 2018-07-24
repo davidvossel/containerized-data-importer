@@ -2,7 +2,7 @@ kind: ServiceAccount
 apiVersion: v1
 metadata:
   name: cdi-sa
-  namespace: default  # update accordingly based on the namespace you are deploying in
+  namespace: kube-system  # update accordingly based on the namespace you are deploying in
   labels:
     cdi.kubevirt.io: ""
 ---
@@ -28,6 +28,9 @@ rules:
 - apiGroups: ["cdi.kubevirt.io"]
   resources: ["datavolumes"]
   verbs: ["get", "list", "watch", "update"]
+- apiGroups: ["cdi.kubevirt.io"]
+  resources: ["uploadtokens"]
+  verbs: ["get", "list", "watch", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1beta1
 kind: ClusterRoleBinding
@@ -42,13 +45,128 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: cdi-sa
-    namespace: default  # update accordingly based on the namespace you are deploying in
+    namespace: kube-system  # update accordingly based on the namespace you are deploying in
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: cdi-apiserver
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: RoleBinding
+metadata:
+  name: cdi-apiserver
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+roleRef:
+  kind: Role
+  name: cdi-apiserver
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: cdi-apiserver
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: Role
+metadata:
+  name: cdi-apiserver
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+rules:
+  - apiGroups:
+      - ''
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - delete
+      - update
+      - create
+  - apiGroups:
+      - ''
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: cdi-apiserver
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+roleRef:
+  kind: ClusterRole
+  name: cdi-apiserver
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: cdi-apiserver
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRole
+metadata:
+  name: cdi-apiserver
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+rules:
+  - apiGroups:
+      - admissionregistration.k8s.io
+    resources:
+      - mutatingwebhookconfigurations
+    verbs:
+      - get
+      - create
+      - update
+  - apiGroups:
+      - apiregistration.k8s.io
+    resources:
+      - apiservices
+    verbs:
+      - get
+      - create
+      - update
+  - apiGroups:
+      - ''
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: cdi-apiserver-auth-delegator
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: cdi-apiserver
+  namespace: kube-system
 ---
 apiVersion: apps/v1beta2
 kind: Deployment
 metadata:
   name: cdi-deployment
-  namespace: default  # update accordingly based on the namespace you are deploying in
+  namespace: kube-system  # update accordingly based on the namespace you are deploying in
   labels:
     cdi.kubevirt.io: ""
     app: containerized-data-importer
@@ -67,7 +185,7 @@ spec:
       - name: cdi-controller
         image: kubevirt/cdi-controller:v1.0.0
         imagePullPolicy: IfNotPresent
-        args: ["-v=1"] # default verbosity; change to 2 or 3 for more detailed logging
+        args: ["-v=1"] # kube-system verbosity; change to 2 or 3 for more detailed logging
 ---
 apiVersion: apiextensions.k8s.io/v1beta1
 kind: CustomResourceDefinition
@@ -86,4 +204,61 @@ spec:
     singular: datavolume
   scope: Namespaced
   version: v1alpha1
-
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cdi-api
+  namespace: kube-system
+  labels:
+    cdi.kubevirt.io: "cdi-api"
+spec:
+  ports:
+    - port: 443
+      targetPort: 8443
+      protocol: TCP
+  selector:
+    cdi.kubevirt.io: cdi-api
+---
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: cdi-api
+  namespace: kube-system  # update accordingly based on the namespace you are deploying in
+  labels:
+    cdi.kubevirt.io: "cdi-api"
+spec:
+  selector:
+    matchLabels:
+      cdi.kubevirt.io: "cdi-api"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        cdi.kubevirt.io: "cdi-api"
+    spec:
+      serviceAccountName: cdi-apiserver
+      containers:
+      - name: cdi-uploader-api
+        image: kubevirt/cdi-uploader:v1.0.0
+        imagePullPolicy: IfNotPresent
+        args: ["-v=1"] # kube-system verbosity; change to 2 or 3 for more detailed logging
+---
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  labels:
+    cdi.kubevirt.io: ""
+  name: uploadtokens.cdi.kubevirt.io
+spec:
+  group: cdi.kubevirt.io
+  names:
+    kind: UploadToken
+    plural: uploadtokens
+    shortNames:
+    - ut
+    - uts
+    singular: uploadtoken
+  scope: Namespaced
+  version: v1alpha1
+---
