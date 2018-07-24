@@ -25,65 +25,65 @@ import (
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
-	datavolumecontroller_v1alpha1 "kubevirt.io/containerized-data-importer/pkg/apis/datavolumecontroller/v1alpha1"
+	cdicontroller_v1alpha1 "kubevirt.io/containerized-data-importer/pkg/apis/cdicontroller/v1alpha1"
 	versioned "kubevirt.io/containerized-data-importer/pkg/client/clientset/versioned"
 	internalinterfaces "kubevirt.io/containerized-data-importer/pkg/client/informers/externalversions/internalinterfaces"
-	v1alpha1 "kubevirt.io/containerized-data-importer/pkg/client/listers/datavolumecontroller/v1alpha1"
+	v1alpha1 "kubevirt.io/containerized-data-importer/pkg/client/listers/cdicontroller/v1alpha1"
 )
 
-// DataVolumeInformer provides access to a shared informer and lister for
-// DataVolumes.
-type DataVolumeInformer interface {
+// UploadTokenInformer provides access to a shared informer and lister for
+// UploadTokens.
+type UploadTokenInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() v1alpha1.DataVolumeLister
+	Lister() v1alpha1.UploadTokenLister
 }
 
-type dataVolumeInformer struct {
+type uploadTokenInformer struct {
 	factory          internalinterfaces.SharedInformerFactory
 	tweakListOptions internalinterfaces.TweakListOptionsFunc
 	namespace        string
 }
 
-// NewDataVolumeInformer constructs a new informer for DataVolume type.
+// NewUploadTokenInformer constructs a new informer for UploadToken type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
-func NewDataVolumeInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers) cache.SharedIndexInformer {
-	return NewFilteredDataVolumeInformer(client, namespace, resyncPeriod, indexers, nil)
+func NewUploadTokenInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers) cache.SharedIndexInformer {
+	return NewFilteredUploadTokenInformer(client, namespace, resyncPeriod, indexers, nil)
 }
 
-// NewFilteredDataVolumeInformer constructs a new informer for DataVolume type.
+// NewFilteredUploadTokenInformer constructs a new informer for UploadToken type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
-func NewFilteredDataVolumeInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
+func NewFilteredUploadTokenInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
 	return cache.NewSharedIndexInformer(
 		&cache.ListWatch{
 			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CdiV1alpha1().DataVolumes(namespace).List(options)
+				return client.CdiV1alpha1().UploadTokens(namespace).List(options)
 			},
 			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CdiV1alpha1().DataVolumes(namespace).Watch(options)
+				return client.CdiV1alpha1().UploadTokens(namespace).Watch(options)
 			},
 		},
-		&datavolumecontroller_v1alpha1.DataVolume{},
+		&cdicontroller_v1alpha1.UploadToken{},
 		resyncPeriod,
 		indexers,
 	)
 }
 
-func (f *dataVolumeInformer) defaultInformer(client versioned.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return NewFilteredDataVolumeInformer(client, f.namespace, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, f.tweakListOptions)
+func (f *uploadTokenInformer) defaultInformer(client versioned.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
+	return NewFilteredUploadTokenInformer(client, f.namespace, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, f.tweakListOptions)
 }
 
-func (f *dataVolumeInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&datavolumecontroller_v1alpha1.DataVolume{}, f.defaultInformer)
+func (f *uploadTokenInformer) Informer() cache.SharedIndexInformer {
+	return f.factory.InformerFor(&cdicontroller_v1alpha1.UploadToken{}, f.defaultInformer)
 }
 
-func (f *dataVolumeInformer) Lister() v1alpha1.DataVolumeLister {
-	return v1alpha1.NewDataVolumeLister(f.Informer().GetIndexer())
+func (f *uploadTokenInformer) Lister() v1alpha1.UploadTokenLister {
+	return v1alpha1.NewUploadTokenLister(f.Informer().GetIndexer())
 }
