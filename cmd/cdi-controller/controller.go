@@ -100,6 +100,12 @@ func main() {
 	pvcInformer := pvcInformerFactory.Core().V1().PersistentVolumeClaims()
 	podInformer := podInformerFactory.Core().V1().Pods()
 	dataVolumeInformer := cdiInformerFactory.Cdi().V1alpha1().DataVolumes()
+	uploadTokenInformer := cdiInformerFactory.Cdi().V1alpha1().UploadTokens()
+
+	uploadTokenController := controller.NewUploadTokenController(
+		client,
+		cdiClient,
+		uploadTokenInformer)
 
 	dataVolumeController := controller.NewDataVolumeController(
 		client,
@@ -130,6 +136,13 @@ func main() {
 	go podInformerFactory.Start(stopCh)
 
 	glog.V(Vuser).Infoln("started informers")
+
+	go func() {
+		err = uploadTokenController.Run(1, stopCh)
+		if err != nil {
+			glog.Fatalln("Error running clone controller: %+v", err)
+		}
+	}()
 
 	go func() {
 		err = dataVolumeController.Run(3, stopCh)
