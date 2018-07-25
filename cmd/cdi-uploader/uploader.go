@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -13,10 +14,12 @@ import (
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
+	"k8s.io/api/admission/v1beta1"
 	admissionregistrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
 	"k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/cert"
@@ -270,6 +273,94 @@ func (app *cdiAPIApp) startTLS() error {
 	return <-errors
 }
 
+func toAdmissionResponse(err error) *v1beta1.AdmissionResponse {
+	return &v1beta1.AdmissionResponse{
+		Result: &metav1.Status{
+			Message: err.Error(),
+		},
+	}
+}
+
+type admitFunc func(*v1beta1.AdmissionReview) *v1beta1.AdmissionResponse
+
+func mutateUploadTokens(ar *v1beta1.AdmissionReview) *v1beta1.AdmissionResponse {
+	glog.V(Vadmin).Info("adding token to upload token crd")
+	token := cdiv1.UploadToken{}
+
+	raw := ar.Request.Object.Raw
+	err := json.Unmarshal(raw, &token)
+	if err != nil {
+		glog.Error(err)
+		return toAdmissionResponse(err)
+	}
+
+	reviewResponse := v1beta1.AdmissionResponse{}
+	reviewResponse.Allowed = true
+
+	patch := `[{ "op": "add", "path": "/status", "value": { "token" : "1234" } }]`
+
+	reviewResponse.Patch = []byte(patch)
+
+	pt := v1beta1.PatchTypeJSONPatch
+	reviewResponse.PatchType = &pt
+	return &reviewResponse
+}
+
+func getAdmissionReview(r *http.Request) (*v1beta1.AdmissionReview, error) {
+	var body []byte
+	if r.Body != nil {
+		if data, err := ioutil.ReadAll(r.Body); err == nil {
+			body = data
+		}
+	}
+
+	// verify the content type is accurate
+	contentType := r.Header.Get("Content-Type")
+	if contentType != "application/json" {
+		return nil, fmt.Errorf("contentType=%s, expect application/json", contentType)
+	}
+
+	ar := &v1beta1.AdmissionReview{}
+	err := json.Unmarshal(body, ar)
+	return ar, err
+}
+
+func serve(resp http.ResponseWriter, req *http.Request, admit admitFunc) {
+	response := v1beta1.AdmissionReview{}
+	review, err := getAdmissionReview(req)
+
+	if err != nil {
+		resp.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	reviewResponse := admit(review)
+	if reviewResponse != nil {
+		response.Response = reviewResponse
+		response.Response.UID = review.Request.UID
+	}
+	// reset the Object and OldObject, they are not needed in a response.
+	review.Request.Object = runtime.RawExtension{}
+	review.Request.OldObject = runtime.RawExtension{}
+
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		glog.Error(err)
+		resp.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if _, err := resp.Write(responseBytes); err != nil {
+		glog.Error(err)
+		resp.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	resp.WriteHeader(http.StatusOK)
+}
+
+func serveMutateUploadTokens(w http.ResponseWriter, r *http.Request) {
+	serve(w, r, mutateUploadTokens)
+}
+
 func (app *cdiAPIApp) createWebhook() error {
 	namespace := getNamespace()
 	registerWebhook := false
@@ -337,12 +428,7 @@ func (app *cdiAPIApp) createWebhook() error {
 	}
 
 	http.HandleFunc(tokenPath, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("hit hook")
-
-		for key, val := range r.Header {
-
-			fmt.Printf("%s=%s\n", key, val)
-		}
+		serveMutateUploadTokens(w, r)
 	})
 
 	return nil

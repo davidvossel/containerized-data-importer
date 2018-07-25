@@ -23,7 +23,7 @@ import (
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	//metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	//"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -39,9 +39,12 @@ import (
 	cdischeme "kubevirt.io/containerized-data-importer/pkg/client/clientset/versioned/scheme"
 	informers "kubevirt.io/containerized-data-importer/pkg/client/informers/externalversions/cdicontroller/v1alpha1"
 	listers "kubevirt.io/containerized-data-importer/pkg/client/listers/cdicontroller/v1alpha1"
+	. "kubevirt.io/containerized-data-importer/pkg/common"
 )
 
 const uploadTokenControllerAgentName = "uploadtoken-controller"
+
+const uploadTokenExpireTimeoutSeconds = 300
 
 const (
 	UploadTokenSuccessSynced         = "Synced"
@@ -70,7 +73,7 @@ func NewUploadTokenController(
 	// Add uploadtoken-controller types to the default Kubernetes Scheme so Events can be
 	// logged for uploadtoken-controller types.
 	cdischeme.AddToScheme(scheme.Scheme)
-	glog.V(4).Info("Creating event broadcaster")
+	glog.V(Vdebug).Info("Creating event broadcaster")
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(glog.Infof)
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kubeclientset.CoreV1().Events("")})
@@ -212,7 +215,37 @@ func (c *UploadTokenController) syncHandler(key string) error {
 		return err
 	}
 
-	// TODO delete after token expires
+	if uploadToken.DeletionTimestamp != nil {
+		// already being deleted
+		return nil
+	}
+
+	if !uploadToken.CreationTimestamp.IsZero() {
+		// see if it is time to delete
+
+		nowSeconds := time.Now().UTC().Unix()
+		creationSeconds := uploadToken.CreationTimestamp.UTC().Unix()
+
+		elapsed := nowSeconds - creationSeconds
+		if elapsed < 0 {
+			// could happen if ntp is a few seconds off between nodes
+			elapsed = 0
+		}
+
+		glog.Infof("elapsed seconds %d", elapsed)
+		if elapsed >= uploadTokenExpireTimeoutSeconds {
+			err = c.cdiClientSet.CdiV1alpha1().UploadTokens(uploadToken.Namespace).Delete(uploadToken.Name, &metav1.DeleteOptions{})
+			if err != nil {
+				return err
+			}
+		} else {
+			// make sure we process this again once the token has expired
+			secondsUntilExpire := uploadTokenExpireTimeoutSeconds - elapsed
+			dur := time.Duration(secondsUntilExpire) * time.Second
+			c.workqueue.AddAfter(key, dur)
+		}
+	}
+
 	c.recorder.Event(uploadToken, corev1.EventTypeNormal, UploadTokenSuccessSynced, UploadTokenMessageResourceSynced)
 	return nil
 }
