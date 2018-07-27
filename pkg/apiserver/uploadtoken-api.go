@@ -1,15 +1,14 @@
-package main
+package apiserver
 
 import (
+	"crypto/rsa"
 	"crypto/tls"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
@@ -21,7 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/cert"
 	"k8s.io/client-go/util/cert/triple"
 
@@ -30,12 +28,6 @@ import (
 )
 
 const (
-	// Default port that api listens on.
-	defaultPort = 8443
-
-	// Default address api listens on.
-	defaultHost = "0.0.0.0"
-
 	// selfsigned cert secret name
 	apiCertSecretName = "cdi-api-certs"
 
@@ -49,13 +41,11 @@ const (
 	signingCertBytesValue = "signing-cert-bytes"
 )
 
-var (
-	configPath string
-	masterURL  string
-	verbose    string
-)
+type UploadApiServer interface {
+	Start() error
+}
 
-type cdiAPIApp struct {
+type uploadApiApp struct {
 	bindAddress string
 	bindPort    uint
 
@@ -70,28 +60,41 @@ type cdiAPIApp struct {
 	requestHeaderClientCABytes []byte
 }
 
-func init() {
-	// flags
-	flag.StringVar(&configPath, "kubeconfig", os.Getenv("KUBECONFIG"), "(Optional) Overrides $KUBECONFIG")
-	flag.StringVar(&masterURL, "server", "", "(Optional) URL address of a remote api server.  Do not set for local clusters.")
-	flag.Parse()
-
-	// get the verbose level so it can be passed to the importer pod
-	defVerbose := fmt.Sprintf("%d", DEFAULT_VERBOSE) // note flag values are strings
-	verbose = defVerbose
-	// visit actual flags passed in and if passed check -v and set verbose
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "v" {
-			verbose = f.Value.String()
-		}
-	})
-	if verbose == defVerbose {
-		glog.V(Vuser).Infof("Note: increase the -v level in the api deployment for more detailed logging, eg. -v=%d or -v=%d\n", Vadmin, Vdebug)
+func NewUploadApiServer(bindAddress string, bindPort uint, client *kubernetes.Clientset) (UploadApiServer, error) {
+	var err error
+	app := &uploadApiApp{
+		bindAddress: bindAddress,
+		bindPort:    bindPort,
+		client:      client,
+	}
+	app.certsDirectory, err = ioutil.TempDir("", "certsdir")
+	if err != nil {
+		glog.Fatalf("Unable to create certs temporary directory: %v\n", errors.WithStack(err))
 	}
 
+	err = app.getClientCert()
+	if err != nil {
+		return nil, errors.Errorf("Unable to get client cert: %v\n", errors.WithStack(err))
+	}
+
+	err = app.getSelfSignedCert()
+	if err != nil {
+		return nil, errors.Errorf("Unable to get self signed cert: %v\n", errors.WithStack(err))
+	}
+
+	err = app.createWebhook()
+	if err != nil {
+		return nil, errors.Errorf("Unable to create webhook: %v\n", errors.WithStack(err))
+	}
+
+	return app, nil
 }
 
-func (app *cdiAPIApp) getClientCert() error {
+func (app *uploadApiApp) Start() error {
+	return app.startTLS()
+}
+
+func (app *uploadApiApp) getClientCert() error {
 	authConfigMap, err := app.client.CoreV1().ConfigMaps(metav1.NamespaceSystem).Get("extension-apiserver-authentication", metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -113,16 +116,7 @@ func (app *cdiAPIApp) getClientCert() error {
 	return nil
 }
 
-func getNamespace() string {
-	if data, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
-		if ns := strings.TrimSpace(string(data)); len(ns) > 0 {
-			return ns
-		}
-	}
-	return metav1.NamespaceSystem
-}
-
-func (app *cdiAPIApp) getSelfSignedCert() error {
+func (app *uploadApiApp) getSelfSignedCert() error {
 	var ok bool
 
 	namespace := getNamespace()
@@ -188,10 +182,28 @@ func (app *cdiAPIApp) getSelfSignedCert() error {
 			return errors.Errorf("%s value not found in %s cdi-api secret", signingCertBytesValue, apiCertSecretName)
 		}
 	}
+
+	obj, err := cert.ParsePrivateKeyPEM(app.keyBytes)
+	privateKey, ok := obj.(*rsa.PrivateKey)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.Errorf("unable to parse private key")
+	}
+
+	err = recordApiPrivateKey(app.client, privateKey)
+	if err != nil {
+		return err
+	}
+	err = recordApiPublicKey(app.client, &privateKey.PublicKey)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
-func (app *cdiAPIApp) startTLS() error {
+func (app *uploadApiApp) startTLS() error {
 
 	errors := make(chan error)
 
@@ -361,7 +373,7 @@ func serveMutateUploadTokens(w http.ResponseWriter, r *http.Request) {
 	serve(w, r, mutateUploadTokens)
 }
 
-func (app *cdiAPIApp) createWebhook() error {
+func (app *uploadApiApp) createWebhook() error {
 	namespace := getNamespace()
 	registerWebhook := false
 
@@ -432,47 +444,4 @@ func (app *cdiAPIApp) createWebhook() error {
 	})
 
 	return nil
-}
-
-func main() {
-	defer glog.Flush()
-
-	cfg, err := clientcmd.BuildConfigFromFlags(masterURL, configPath)
-	if err != nil {
-		glog.Fatalf("Unable to get kube config: %v\n", errors.WithStack(err))
-	}
-	client, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		glog.Fatalf("Unable to get kube client: %v\n", errors.WithStack(err))
-	}
-
-	app := &cdiAPIApp{
-		bindAddress: defaultHost,
-		bindPort:    defaultPort,
-		client:      client,
-	}
-	app.certsDirectory, err = ioutil.TempDir("", "certsdir")
-	if err != nil {
-		glog.Fatalf("Unable to create certs temporary directory: %v\n", errors.WithStack(err))
-	}
-
-	err = app.getClientCert()
-	if err != nil {
-		glog.Fatalf("Unable to get client cert: %v\n", errors.WithStack(err))
-	}
-
-	err = app.getSelfSignedCert()
-	if err != nil {
-		glog.Fatalf("Unable to get self signed cert: %v\n", errors.WithStack(err))
-	}
-
-	err = app.createWebhook()
-	if err != nil {
-		glog.Fatalf("Unable to create webhook: %v\n", errors.WithStack(err))
-	}
-
-	err = app.startTLS()
-	if err != nil {
-		glog.Fatalf("TLS server failed: %v\n", errors.WithStack(err))
-	}
 }

@@ -96,7 +96,9 @@ rules:
     verbs:
       - get
       - list
-      - watch
+      - delete
+      - update
+      - create
 ---
 apiVersion: rbac.authorization.k8s.io/v1beta1
 kind: ClusterRoleBinding
@@ -239,8 +241,8 @@ spec:
     spec:
       serviceAccountName: cdi-apiserver
       containers:
-      - name: cdi-uploader-api
-        image: kubevirt/cdi-uploader:v1.0.0
+      - name: cdi-apiserver-api
+        image: kubevirt/cdi-apiserver:v1.0.0
         imagePullPolicy: IfNotPresent
         args: ["-v=1"] # kube-system verbosity; change to 2 or 3 for more detailed logging
 ---

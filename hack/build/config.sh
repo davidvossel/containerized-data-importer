@@ -15,7 +15,7 @@
 CONTROLLER="cdi-controller"
 IMPORTER="cdi-importer"
 CLONER="cdi-cloner"
-UPLOADER="cdi-uploader"
+UPLOADER="cdi-apiserver"
 
 BINARIES="cmd/${CONTROLLER} cmd/${IMPORTER}"
 CDI_PKGS="cmd/ pkg/ test/"
