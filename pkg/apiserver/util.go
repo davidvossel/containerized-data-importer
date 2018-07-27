@@ -7,8 +7,6 @@ import (
 	"io/ioutil"
 	"strings"
 
-	"github.com/pkg/errors"
-
 	"k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,39 +29,39 @@ const (
 	uploadProxyPublicKeyConfigMap = "cdi-proxy-public"
 )
 
-func recordApiPublicKey(client *kubernetes.Clientset, publicKey *rsa.PublicKey) error {
+func RecordApiPublicKey(client *kubernetes.Clientset, publicKey *rsa.PublicKey) error {
 	return setPublicKeyConfigMap(client, publicKey, apiPublicKeyConfigMap)
 }
 
-func recordApiPrivateKey(client *kubernetes.Clientset, privateKey *rsa.PrivateKey) error {
-	return setPrivateKeySecret(client, privateKey, apiSecretName)
-}
+//func RecordApiPrivateKey(client *kubernetes.Clientset, privateKey *rsa.PrivateKey) error {
+//	return setPrivateKeySecret(client, privateKey, apiSecretName)
+//}
 
-func recordUploadProxyPublicKey(client *kubernetes.Clientset, publicKey *rsa.PublicKey) error {
+func RecordUploadProxyPublicKey(client *kubernetes.Clientset, publicKey *rsa.PublicKey) error {
 	return setPublicKeyConfigMap(client, publicKey, uploadProxyPublicKeyConfigMap)
 }
 
-func recordUploadProxyPrivateKey(client *kubernetes.Clientset, privateKey *rsa.PrivateKey) error {
+func RecordUploadProxyPrivateKey(client *kubernetes.Clientset, privateKey *rsa.PrivateKey) error {
 	return setPrivateKeySecret(client, privateKey, uploadProxySecretName)
 }
 
-func getApiPublicKey(client *kubernetes.Clientset) (*rsa.PublicKey, error) {
+func GetApiPublicKey(client *kubernetes.Clientset) (*rsa.PublicKey, bool, error) {
 	return getPublicKey(client, apiPublicKeyConfigMap)
 }
 
-func getUploadProxyPublicKey(client *kubernetes.Clientset) (*rsa.PublicKey, error) {
+func GetUploadProxyPublicKey(client *kubernetes.Clientset) (*rsa.PublicKey, bool, error) {
 	return getPublicKey(client, uploadProxyPublicKeyConfigMap)
 }
 
-func getUploadProxyPrivateKey(client *kubernetes.Clientset) (*rsa.PrivateKey, error) {
+func GetUploadProxyPrivateKey(client *kubernetes.Clientset) (*rsa.PrivateKey, bool, error) {
 	return getPrivateSecret(client, uploadProxySecretName)
 }
 
-func getApiPrivateKey(client *kubernetes.Clientset) (*rsa.PrivateKey, error) {
-	return getPrivateSecret(client, apiSecretName)
-}
+//func GetApiPrivateKey(client *kubernetes.Clientset) (*rsa.PrivateKey, bool, error) {
+//	return getPrivateSecret(client, apiSecretName)
+//}
 
-func getNamespace() string {
+func GetNamespace() string {
 	if data, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
 		if ns := strings.TrimSpace(string(data)); len(ns) > 0 {
 			return ns
@@ -73,7 +71,7 @@ func getNamespace() string {
 }
 
 func getConfigMap(client *kubernetes.Clientset, configMap string) (*v1.ConfigMap, bool, error) {
-	namespace := getNamespace()
+	namespace := GetNamespace()
 
 	config, err := client.CoreV1().ConfigMaps(namespace).Get(configMap, metav1.GetOptions{})
 
@@ -106,29 +104,29 @@ func decodePublicKey(encodedKey string) (*rsa.PublicKey, error) {
 	return key, nil
 }
 
-func getPublicKey(client *kubernetes.Clientset, configMap string) (*rsa.PublicKey, error) {
+func getPublicKey(client *kubernetes.Clientset, configMap string) (*rsa.PublicKey, bool, error) {
 	config, exists, err := getConfigMap(client, configMap)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if !exists {
-		return nil, errors.Errorf("configmap %s not found", configMap)
+		return nil, false, nil
 	}
 
 	publicKeyEncoded, ok := config.Data["publicKey"]
 	if !ok {
-		return nil, errors.Errorf("publicKey value not found in configmap %s", configMap)
+		return nil, false, nil
 	}
 
 	key, err := decodePublicKey(publicKeyEncoded)
 
-	return key, err
+	return key, true, err
 }
 
 func setPublicKeyConfigMap(client *kubernetes.Clientset, publicKey *rsa.PublicKey, configMap string) error {
 	publicKeyEncoded := encodePublicKey(publicKey)
-	namespace := getNamespace()
+	namespace := GetNamespace()
 
 	config, exists, err := getConfigMap(client, configMap)
 	if err != nil {
@@ -182,7 +180,7 @@ func decodePrivateKey(encodedKey string) (*rsa.PrivateKey, error) {
 }
 
 func getSecret(client *kubernetes.Clientset, secretName string) (*v1.Secret, bool, error) {
-	namespace := getNamespace()
+	namespace := GetNamespace()
 	secret, err := client.CoreV1().Secrets(namespace).Get(secretName, metav1.GetOptions{})
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
@@ -195,29 +193,29 @@ func getSecret(client *kubernetes.Clientset, secretName string) (*v1.Secret, boo
 	return secret, true, nil
 }
 
-func getPrivateSecret(client *kubernetes.Clientset, secretName string) (*rsa.PrivateKey, error) {
+func getPrivateSecret(client *kubernetes.Clientset, secretName string) (*rsa.PrivateKey, bool, error) {
 	secret, exists, err := getSecret(client, secretName)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if !exists {
-		return nil, errors.Errorf("secret %s not found", secretName)
+		return nil, false, nil
 	}
 
 	privateKeyEncoded, ok := secret.Data["privateKey"]
 	if !ok {
-		return nil, errors.Errorf("privateKey value not found in secret%s", secretName)
+		return nil, false, nil
 	}
 
 	key, err := decodePrivateKey(string(privateKeyEncoded))
 
-	return key, err
+	return key, true, err
 }
 
 func setPrivateKeySecret(client *kubernetes.Clientset, privateKey *rsa.PrivateKey, secretName string) error {
 	privateKeyEncoded := encodePrivateKey(privateKey)
-	namespace := getNamespace()
+	namespace := GetNamespace()
 
 	secret, exists, err := getSecret(client, secretName)
 	if err != nil {

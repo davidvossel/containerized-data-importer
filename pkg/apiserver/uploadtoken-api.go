@@ -119,7 +119,7 @@ func (app *uploadApiApp) getClientCert() error {
 func (app *uploadApiApp) getSelfSignedCert() error {
 	var ok bool
 
-	namespace := getNamespace()
+	namespace := GetNamespace()
 	generateCerts := false
 	secret, err := app.client.CoreV1().Secrets(namespace).Get(apiCertSecretName, metav1.GetOptions{})
 	if err != nil {
@@ -192,11 +192,7 @@ func (app *uploadApiApp) getSelfSignedCert() error {
 		return errors.Errorf("unable to parse private key")
 	}
 
-	err = recordApiPrivateKey(app.client, privateKey)
-	if err != nil {
-		return err
-	}
-	err = recordApiPublicKey(app.client, &privateKey.PublicKey)
+	err = RecordApiPublicKey(app.client, &privateKey.PublicKey)
 	if err != nil {
 		return err
 	}
@@ -252,23 +248,8 @@ func (app *uploadApiApp) startTLS() error {
 	}
 
 	tlsConfig := &tls.Config{
-		ClientCAs: pool,
-		// A RequestClientCert request means we're not guaranteed
-		// a client has been authenticated unless they provide a peer
-		// cert.
-		//
-		// Make sure to verify in subresource endpoint that peer cert
-		// was provided before processing request. If the peer cert is
-		// given on the connection, then we can be guaranteed that it
-		// was signed by the client CA in our pool.
-		//
-		// There is another ClientAuth type called 'RequireAndVerifyClientCert'
-		// We can't use this type here because during the aggregated api status
-		// check it attempts to hit '/' on our api endpoint to verify an http
-		// response is given. That status request won't send a peer cert regardless
-		// if the TLS handshake requests it. As a result, the TLS handshake fails
-		// and our aggregated endpoint never becomes available.
-		ClientAuth: tls.RequestClientCert,
+		ClientCAs:  pool,
+		ClientAuth: tls.RequireAndVerifyClientCert,
 	}
 	tlsConfig.BuildNameToCertificate()
 
@@ -374,7 +355,7 @@ func serveMutateUploadTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *uploadApiApp) createWebhook() error {
-	namespace := getNamespace()
+	namespace := GetNamespace()
 	registerWebhook := false
 
 	tokenPath := tokenMutationPath

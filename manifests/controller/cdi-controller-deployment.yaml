@@ -264,3 +264,128 @@ spec:
   scope: Namespaced
   version: v1alpha1
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cdi-uploadproxy
+  namespace: kube-system
+  labels:
+    cdi.kubevirt.io: "cdi-uploadproxy"
+spec:
+  ports:
+    - port: 443
+      targetPort: 8443
+      protocol: TCP
+  selector:
+    cdi.kubevirt.io: cdi-uploadproxy
+---
+apiVersion: apps/v1beta2
+kind: Deployment
+metadata:
+  name: cdi-uploadproxy
+  namespace: kube-system  # update accordingly based on the namespace you are deploying in
+  labels:
+    cdi.kubevirt.io: "cdi-uploadproxy"
+spec:
+  selector:
+    matchLabels:
+      cdi.kubevirt.io: "cdi-uploadproxy"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        cdi.kubevirt.io: "cdi-uploadproxy"
+    spec:
+      serviceAccountName: cdi-uploadproxy
+      containers:
+      - name: cdi-uploadproxy
+        image: kubevirt/cdi-uploadproxy:v1.0.0
+        imagePullPolicy: IfNotPresent
+        args: ["-v=1"] # kube-system verbosity; change to 2 or 3 for more detailed logging
+---
+
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: cdi-uploadproxy
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: RoleBinding
+metadata:
+  name: cdi-uploadproxy
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+roleRef:
+  kind: Role
+  name: cdi-uploadproxy
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: cdi-uploadproxy
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: Role
+metadata:
+  name: cdi-uploadproxy
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+rules:
+  - apiGroups:
+      - ''
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - delete
+      - update
+      - create
+  - apiGroups:
+      - ''
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - delete
+      - update
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRoleBinding
+metadata:
+  name: cdi-uploadproxy
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+roleRef:
+  kind: ClusterRole
+  name: cdi-uploadproxy
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: cdi-uploadproxy
+    namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: ClusterRole
+metadata:
+  name: cdi-uploadproxy
+  namespace: kube-system
+  labels:
+    kubevirt.io: ""
+rules:
+  - apiGroups:
+      - ''
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
