@@ -58,6 +58,10 @@ type uploadApiApp struct {
 	keyBytes                   []byte
 	clientCABytes              []byte
 	requestHeaderClientCABytes []byte
+
+	privateSigningKey *rsa.PrivateKey
+
+	publicEncryptionKey *rsa.PublicKey
 }
 
 func NewUploadApiServer(bindAddress string, bindPort uint, client *kubernetes.Clientset) (UploadApiServer, error) {
@@ -196,6 +200,18 @@ func (app *uploadApiApp) getSelfSignedCert() error {
 	if err != nil {
 		return err
 	}
+
+	app.privateSigningKey = privateKey
+
+	publicKey, exists, err := GetUploadProxyPublicKey(app.client)
+	if err != nil {
+		return err
+	} else if !exists {
+		return errors.Errorf("upload proxy has not generated encryption key yet")
+	}
+
+	app.publicEncryptionKey = publicKey
+
 	return nil
 }
 
@@ -249,7 +265,7 @@ func (app *uploadApiApp) startTLS() error {
 
 	tlsConfig := &tls.Config{
 		ClientCAs:  pool,
-		ClientAuth: tls.RequireAndVerifyClientCert,
+		ClientAuth: tls.RequestClientCert,
 	}
 	tlsConfig.BuildNameToCertificate()
 
@@ -274,9 +290,9 @@ func toAdmissionResponse(err error) *v1beta1.AdmissionResponse {
 	}
 }
 
-type admitFunc func(*v1beta1.AdmissionReview) *v1beta1.AdmissionResponse
+type admitFunc func(*v1beta1.AdmissionReview, *rsa.PrivateKey, *rsa.PublicKey) *v1beta1.AdmissionResponse
 
-func mutateUploadTokens(ar *v1beta1.AdmissionReview) *v1beta1.AdmissionResponse {
+func mutateUploadTokens(ar *v1beta1.AdmissionReview, signingKey *rsa.PrivateKey, encryptionKey *rsa.PublicKey) *v1beta1.AdmissionResponse {
 	glog.V(Vadmin).Info("adding token to upload token crd")
 	token := cdiv1.UploadToken{}
 
@@ -290,7 +306,16 @@ func mutateUploadTokens(ar *v1beta1.AdmissionReview) *v1beta1.AdmissionResponse 
 	reviewResponse := v1beta1.AdmissionResponse{}
 	reviewResponse.Allowed = true
 
-	patch := `[{ "op": "add", "path": "/status", "value": { "token" : "1234" } }]`
+	if token.Spec.PvcName == "" {
+		return toAdmissionResponse(errors.Errorf("no pvcName set on UploadToken spec"))
+	}
+
+	encryptedTokenData, err := GenerateToken(token.Spec.PvcName, token.Namespace, encryptionKey, signingKey)
+	if err != nil {
+		glog.Error(err)
+		return toAdmissionResponse(err)
+	}
+	patch := fmt.Sprintf("[{ \"op\": \"add\", \"path\": \"/status\", \"value\": { \"token\" : \"%s\" } }]", encryptedTokenData)
 
 	reviewResponse.Patch = []byte(patch)
 
@@ -318,7 +343,7 @@ func getAdmissionReview(r *http.Request) (*v1beta1.AdmissionReview, error) {
 	return ar, err
 }
 
-func serve(resp http.ResponseWriter, req *http.Request, admit admitFunc) {
+func (app *uploadApiApp) serve(resp http.ResponseWriter, req *http.Request, admit admitFunc) {
 	response := v1beta1.AdmissionReview{}
 	review, err := getAdmissionReview(req)
 
@@ -327,7 +352,7 @@ func serve(resp http.ResponseWriter, req *http.Request, admit admitFunc) {
 		return
 	}
 
-	reviewResponse := admit(review)
+	reviewResponse := admit(review, app.privateSigningKey, app.publicEncryptionKey)
 	if reviewResponse != nil {
 		response.Response = reviewResponse
 		response.Response.UID = review.Request.UID
@@ -350,8 +375,8 @@ func serve(resp http.ResponseWriter, req *http.Request, admit admitFunc) {
 	resp.WriteHeader(http.StatusOK)
 }
 
-func serveMutateUploadTokens(w http.ResponseWriter, r *http.Request) {
-	serve(w, r, mutateUploadTokens)
+func (app *uploadApiApp) serveMutateUploadTokens(w http.ResponseWriter, r *http.Request) {
+	app.serve(w, r, mutateUploadTokens)
 }
 
 func (app *uploadApiApp) createWebhook() error {
@@ -421,7 +446,13 @@ func (app *uploadApiApp) createWebhook() error {
 	}
 
 	http.HandleFunc(tokenPath, func(w http.ResponseWriter, r *http.Request) {
-		serveMutateUploadTokens(w, r)
+
+		//if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		//	w.WriteHeader(http.StatusUnauthorized)
+		//	return
+		//}
+
+		app.serveMutateUploadTokens(w, r)
 	})
 
 	return nil

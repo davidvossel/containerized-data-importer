@@ -85,10 +85,32 @@ func NewUploadProxy(bindAddress string, bindPort uint, client *kubernetes.Client
 	}
 
 	http.HandleFunc(uploadPath, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("handled request")
+		app.handleUploadRequest(w, r)
 	})
 
 	return app, nil
+}
+
+func (app *uploadProxyApp) handleUploadRequest(w http.ResponseWriter, r *http.Request) {
+
+	encryptedTokenData := r.Header.Get("UPLOAD_TOKEN")
+	if encryptedTokenData == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	tokenMessage, err := apiserver.DecryptToken(encryptedTokenData, app.uploadProxyPrivateKey, app.apiServerPublicKey)
+
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	if tokenMessage != "" {
+		fmt.Printf("DECODED MESSAGE SUCCESSFULLY")
+	}
+	// TODO add proxy logic here.
+
 }
 
 func (app *uploadProxyApp) generateKeys() error {

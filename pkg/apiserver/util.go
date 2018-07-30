@@ -1,9 +1,14 @@
 package apiserver
 
 import (
+	"crypto"
+	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"strings"
 
@@ -28,6 +33,106 @@ const (
 	// uploadProxy Public key
 	uploadProxyPublicKeyConfigMap = "cdi-proxy-public"
 )
+
+type tokenData struct {
+	EncryptedData []byte `json:"encryptedData"`
+	Signature     []byte `json:"signature"`
+}
+
+func DecryptToken(encryptedToken string,
+	privateDecryptionKey *rsa.PrivateKey,
+	publicSigningKey *rsa.PublicKey) (string, error) {
+
+	label := []byte("")
+	hash := sha256.New()
+
+	tokenData, err := decodeTokenData(encryptedToken)
+	if err != nil {
+		return "", err
+	}
+
+	message, err := rsa.DecryptOAEP(hash, rand.Reader, privateDecryptionKey, tokenData.EncryptedData, label)
+	if err != nil {
+		return "", err
+	}
+
+	var opts rsa.PSSOptions
+	opts.SaltLength = rsa.PSSSaltLengthAuto
+	newhash := crypto.SHA256
+	pssh := newhash.New()
+	pssh.Write(message)
+	hashed := pssh.Sum(nil)
+
+	//Verify Signature
+	err = rsa.VerifyPSS(publicSigningKey, newhash, hashed, tokenData.Signature, &opts)
+	if err != nil {
+		return "", err
+	}
+
+	// If we get here, the message is decrypted and the signature passed
+	return string(message), nil
+}
+
+func GenerateToken(pvcName string,
+	namespace string,
+	publicEncryptionKey *rsa.PublicKey,
+	privateSigningKey *rsa.PrivateKey) (string, error) {
+
+	message := []byte(fmt.Sprintf("%s/%s", namespace, pvcName))
+	label := []byte("")
+	hash := sha256.New()
+
+	encryptedMessage, err := rsa.EncryptOAEP(hash, rand.Reader, publicEncryptionKey, message, label)
+	if err != nil {
+		return "", err
+	}
+
+	var opts rsa.PSSOptions
+	opts.SaltLength = rsa.PSSSaltLengthAuto
+	newhash := crypto.SHA256
+	pssh := newhash.New()
+	pssh.Write(message)
+	hashed := pssh.Sum(nil)
+
+	signature, err := rsa.SignPSS(rand.Reader, privateSigningKey, newhash, hashed, &opts)
+
+	if err != nil {
+		return "", err
+	}
+
+	tokenData := &tokenData{
+		EncryptedData: encryptedMessage,
+		Signature:     signature,
+	}
+
+	return encodeTokenData(tokenData)
+}
+
+func encodeTokenData(tokenData *tokenData) (string, error) {
+
+	bytes, err := json.Marshal(tokenData)
+	if err != nil {
+		return "", err
+	}
+
+	str := base64.StdEncoding.EncodeToString(bytes)
+	return str, nil
+}
+
+func decodeTokenData(encodedtokenData string) (*tokenData, error) {
+	bytes, err := base64.StdEncoding.DecodeString(encodedtokenData)
+	if err != nil {
+		return nil, err
+	}
+
+	tokenData := &tokenData{}
+	err = json.Unmarshal(bytes, tokenData)
+	if err != nil {
+		return nil, err
+	}
+
+	return tokenData, nil
+}
 
 func RecordApiPublicKey(client *kubernetes.Clientset, publicKey *rsa.PublicKey) error {
 	return setPublicKeyConfigMap(client, publicKey, apiPublicKeyConfigMap)
