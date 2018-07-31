@@ -60,6 +60,7 @@ type uploadApiApp struct {
 	client           *kubernetes.Clientset
 	aggregatorClient *aggregatorclient.Clientset
 
+	authorizor     CdiApiAuthorizor
 	certsDirectory string
 
 	signingCertBytes           []byte
@@ -72,13 +73,14 @@ type uploadApiApp struct {
 	publicEncryptionKey *rsa.PublicKey
 }
 
-func NewUploadApiServer(bindAddress string, bindPort uint, client *kubernetes.Clientset, aggregatorClient *aggregatorclient.Clientset) (UploadApiServer, error) {
+func NewUploadApiServer(bindAddress string, bindPort uint, client *kubernetes.Clientset, aggregatorClient *aggregatorclient.Clientset, authorizor CdiApiAuthorizor) (UploadApiServer, error) {
 	var err error
 	app := &uploadApiApp{
 		bindAddress:      bindAddress,
 		bindPort:         bindPort,
 		client:           client,
 		aggregatorClient: aggregatorClient,
+		authorizor:       authorizor,
 	}
 	app.certsDirectory, err = ioutil.TempDir("", "certsdir")
 	if err != nil {
@@ -116,8 +118,10 @@ func NewUploadApiServer(bindAddress string, bindPort uint, client *kubernetes.Cl
 		glog.V(Vuser).Infof("method: %s", req.Request.Method)
 		glog.V(Vuser).Infof("url: %s", req.Request.URL.RequestURI())
 		glog.V(Vuser).Infof("proto: %s", req.Request.Proto)
+		glog.V(Vuser).Infof("headers: %v", req.Request.Header)
 		glog.V(Vuser).Infof("statusCode: %d", resp.StatusCode())
 		glog.V(Vuser).Infof("contentLength: %d", resp.ContentLength())
+
 	})
 
 	//err = app.createWebhook()
@@ -130,6 +134,17 @@ func NewUploadApiServer(bindAddress string, bindPort uint, client *kubernetes.Cl
 
 func (app *uploadApiApp) Start() error {
 	return app.startTLS()
+}
+
+func deserializeStrings(in string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	var ret []string
+	if err := json.Unmarshal([]byte(in), &ret); err != nil {
+		return nil, err
+	}
+	return ret, nil
 }
 
 func (app *uploadApiApp) getClientCert() error {
@@ -149,6 +164,35 @@ func (app *uploadApiApp) getClientCert() error {
 	requestHeaderClientCA, ok := authConfigMap.Data["requestheader-client-ca-file"]
 	if ok {
 		app.requestHeaderClientCABytes = []byte(requestHeaderClientCA)
+	}
+
+	// This config map also contains information about what
+	// headers our authorizor should inspect
+	headers, ok := authConfigMap.Data["requestheader-username-headers"]
+	if ok {
+		headerList, err := deserializeStrings(headers)
+		if err != nil {
+			return err
+		}
+		app.authorizor.AddUserHeaders(headerList)
+	}
+
+	headers, ok = authConfigMap.Data["requestheader-group-headers"]
+	if ok {
+		headerList, err := deserializeStrings(headers)
+		if err != nil {
+			return err
+		}
+		app.authorizor.AddGroupHeaders(headerList)
+	}
+
+	headers, ok = authConfigMap.Data["requestheader-extra-headers-prefix"]
+	if ok {
+		headerList, err := deserializeStrings(headers)
+		if err != nil {
+			return err
+		}
+		app.authorizor.AddExtraPrefixHeaders(headerList)
 	}
 
 	return nil
@@ -414,6 +458,18 @@ func (app *uploadApiApp) serveMutateUploadTokens(w http.ResponseWriter, r *http.
 }
 
 func (app *uploadApiApp) uploadHandler(request *restful.Request, response *restful.Response) {
+
+	allowed, reason, err := app.authorizor.Authorize(request)
+	if err != nil {
+		glog.Error(err)
+		response.WriteHeader(http.StatusInternalServerError)
+		return
+	} else if !allowed {
+		glog.Infof("Rejected Request: %s", reason)
+		response.WriteErrorString(http.StatusUnauthorized, reason)
+		return
+	}
+
 	namespace := request.PathParameter("namespace")
 	defer request.Request.Body.Close()
 	body, err := ioutil.ReadAll(request.Request.Body)
@@ -666,12 +722,6 @@ func (app *uploadApiApp) createWebhook() error {
 	}
 
 	http.HandleFunc(tokenPath, func(w http.ResponseWriter, r *http.Request) {
-
-		//if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		//	w.WriteHeader(http.StatusUnauthorized)
-		//	return
-		//}
-
 		app.serveMutateUploadTokens(w, r)
 	})
 

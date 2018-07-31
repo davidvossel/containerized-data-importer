@@ -64,7 +64,12 @@ func main() {
 
 	aggregatorClient := aggregatorclient.NewForConfigOrDie(cfg)
 
-	uploadApp, err := apiserver.NewUploadApiServer(defaultHost, defaultPort, client, aggregatorClient)
+	authorizor, err := apiserver.NewAuthorizorFromConfig(cfg)
+	if err != nil {
+		glog.Fatalf("Unable to create authorizor: %v\n", errors.WithStack(err))
+	}
+
+	uploadApp, err := apiserver.NewUploadApiServer(defaultHost, defaultPort, client, aggregatorClient, authorizor)
 	if err != nil {
 		glog.Fatalf("Upload api failed to initialize: %v\n", errors.WithStack(err))
 	}
