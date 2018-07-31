@@ -1,14 +1,18 @@
-hash: db75d5eb043fb5282eb0d854dd74a3e97c2b5276068cbcd8ea8277e92c8baa95
-updated: 2018-06-07T14:46:21.073189029-04:00
+hash: 7b501221bc3cafa9ec272eb2160d015e8968ef32abf1563d3461d49fa0382b1a
+updated: 2018-07-31T15:57:56.213982173-04:00
 imports:
 - name: github.com/davecgh/go-spew
   version: 782f4967f2dc4564575ca782fe2d04090b5faca8
   subpackages:
   - spew
+- name: github.com/emicklei/go-restful
+  version: 26b41036311f2da8242db402557a0dbd09dc83da
+  subpackages:
+  - log
 - name: github.com/ghodss/yaml
   version: 73d445a93680fa1a78ae23a5839bad48f32ba1ee
 - name: github.com/go-ini/ini
-  version: 06f5f3d67269ccec1fe5fe4134ba6e982984f7f5
+  version: d58d458bec3cb5adec4b7ddb41131855eac0b33f
 - name: github.com/gogo/protobuf
   version: c0656edd0d9eab7c66d1eb0c568f9039345796f7
   subpackages:
@@ -73,6 +77,7 @@ imports:
   version: 1c05540f6879653db88113bc4a2b70aec4bd491f
   subpackages:
   - context
+  - context/ctxhttp
   - html
   - html/atom
   - html/charset
@@ -80,7 +85,6 @@ imports:
   - http2/hpack
   - idna
   - lex/httplex
-  - websocket
 - name: golang.org/x/sys
   version: 95c6576299259db960f6c5b9b69ea52422860fce
   subpackages:
@@ -118,6 +122,7 @@ imports:
 - name: k8s.io/api
   version: feb48db456a5912850dcccbd42a3535382ba76de
   subpackages:
+  - admission/v1beta1
   - admissionregistration/v1alpha1
   - admissionregistration/v1beta1
   - apps/v1
@@ -327,6 +332,7 @@ imports:
   - rest/watch
   - testing
   - tools/auth
+  - tools/bootstrap/token/api
   - tools/cache
   - tools/cache/testing
   - tools/clientcmd
@@ -340,6 +346,7 @@ imports:
   - transport
   - util/buffer
   - util/cert
+  - util/cert/triple
   - util/flowcontrol
   - util/homedir
   - util/integer
@@ -348,7 +355,17 @@ imports:
 - name: k8s.io/code-generator
   version: 69d88fb997c52c32288a40f5efb62add0a7c8e04
 - name: k8s.io/gengo
-  version: 020f9f03e7e2d20e457f98f0464fb2f7548439f4
+  version: 906d99f89cd644eecf75ab547b29bf9f876f0b59
+- name: k8s.io/kube-aggregator
+  version: a305d191dfc1956bfaa9500f0d2f3481e0e3ffb2
+  subpackages:
+  - pkg/apis/apiregistration
+  - pkg/apis/apiregistration/v1
+  - pkg/apis/apiregistration/v1beta1
+  - pkg/client/clientset_generated/clientset
+  - pkg/client/clientset_generated/clientset/scheme
+  - pkg/client/clientset_generated/clientset/typed/apiregistration/v1
+  - pkg/client/clientset_generated/clientset/typed/apiregistration/v1beta1
 - name: k8s.io/kube-openapi
   version: 39cb288412c48cb533ba4be5d6c28620b9a0c1b4
   subpackages:
