@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
+	"github.com/emicklei/go-restful"
 	"k8s.io/api/admission/v1beta1"
 	admissionregistrationv1beta1 "k8s.io/api/admissionregistration/v1beta1"
 	"k8s.io/api/core/v1"
@@ -22,6 +25,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/cert"
 	"k8s.io/client-go/util/cert/triple"
+	apiregistrationv1beta1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1beta1"
+	aggregatorclient "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset"
 
 	cdiv1 "kubevirt.io/containerized-data-importer/pkg/apis/cdicontroller/v1alpha1"
 	. "kubevirt.io/containerized-data-importer/pkg/common"
@@ -33,6 +38,9 @@ const (
 
 	apiMutationWebhook = "cdi-api-mutator"
 	tokenMutationPath  = "/uploadtoken-mutate"
+
+	uploadTokenGroup   = "upload.cdi.kubevirt.io"
+	uploadTokenVersion = "v1alpha1"
 
 	apiServiceName = "cdi-api"
 
@@ -49,7 +57,8 @@ type uploadApiApp struct {
 	bindAddress string
 	bindPort    uint
 
-	client *kubernetes.Clientset
+	client           *kubernetes.Clientset
+	aggregatorClient *aggregatorclient.Clientset
 
 	certsDirectory string
 
@@ -59,17 +68,17 @@ type uploadApiApp struct {
 	clientCABytes              []byte
 	requestHeaderClientCABytes []byte
 
-	privateSigningKey *rsa.PrivateKey
-
+	privateSigningKey   *rsa.PrivateKey
 	publicEncryptionKey *rsa.PublicKey
 }
 
-func NewUploadApiServer(bindAddress string, bindPort uint, client *kubernetes.Clientset) (UploadApiServer, error) {
+func NewUploadApiServer(bindAddress string, bindPort uint, client *kubernetes.Clientset, aggregatorClient *aggregatorclient.Clientset) (UploadApiServer, error) {
 	var err error
 	app := &uploadApiApp{
-		bindAddress: bindAddress,
-		bindPort:    bindPort,
-		client:      client,
+		bindAddress:      bindAddress,
+		bindPort:         bindPort,
+		client:           client,
+		aggregatorClient: aggregatorClient,
 	}
 	app.certsDirectory, err = ioutil.TempDir("", "certsdir")
 	if err != nil {
@@ -86,10 +95,35 @@ func NewUploadApiServer(bindAddress string, bindPort uint, client *kubernetes.Cl
 		return nil, errors.Errorf("Unable to get self signed cert: %v\n", errors.WithStack(err))
 	}
 
-	err = app.createWebhook()
+	err = app.createApiService()
 	if err != nil {
-		return nil, errors.Errorf("Unable to create webhook: %v\n", errors.WithStack(err))
+		return nil, errors.Errorf("Unable to register aggregated api service: %v\n", errors.WithStack(err))
 	}
+
+	app.composeUploadTokenApi()
+
+	restful.Filter(func(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
+		var username = "-"
+		if req.Request.URL.User != nil {
+			if name := req.Request.URL.User.Username(); name != "" {
+				username = name
+			}
+		}
+		chain.ProcessFilter(req, resp)
+		glog.V(Vuser).Infof("----------------------------")
+		glog.V(Vuser).Infof("remoteAddress:%s", strings.Split(req.Request.RemoteAddr, ":")[0])
+		glog.V(Vuser).Infof("username: %s", username)
+		glog.V(Vuser).Infof("method: %s", req.Request.Method)
+		glog.V(Vuser).Infof("url: %s", req.Request.URL.RequestURI())
+		glog.V(Vuser).Infof("proto: %s", req.Request.Proto)
+		glog.V(Vuser).Infof("statusCode: %d", resp.StatusCode())
+		glog.V(Vuser).Infof("contentLength: %d", resp.ContentLength())
+	})
+
+	//err = app.createWebhook()
+	//if err != nil {
+	//	return nil, errors.Errorf("Unable to create webhook: %v\n", errors.WithStack(err))
+	//}
 
 	return app, nil
 }
@@ -377,6 +411,192 @@ func (app *uploadApiApp) serve(resp http.ResponseWriter, req *http.Request, admi
 
 func (app *uploadApiApp) serveMutateUploadTokens(w http.ResponseWriter, r *http.Request) {
 	app.serve(w, r, mutateUploadTokens)
+}
+
+func (app *uploadApiApp) uploadHandler(request *restful.Request, response *restful.Response) {
+	namespace := request.PathParameter("namespace")
+	defer request.Request.Body.Close()
+	body, err := ioutil.ReadAll(request.Request.Body)
+	if err != nil {
+		glog.Error(err)
+		response.WriteError(http.StatusBadRequest, err)
+	}
+
+	uploadToken := &cdiv1.UploadToken{}
+	err = json.Unmarshal(body, uploadToken)
+	if err != nil {
+		glog.Error(err)
+		response.WriteError(http.StatusBadRequest, err)
+	}
+
+	encryptedTokenData, err := GenerateToken(uploadToken.Spec.PvcName, namespace, app.publicEncryptionKey, app.privateSigningKey)
+
+	uploadToken.Status.Token = encryptedTokenData
+	response.WriteAsJson(uploadToken)
+
+}
+
+func uploadTokenAPIGroup() metav1.APIGroup {
+	apiGroup := metav1.APIGroup{
+		Name: uploadTokenGroup,
+		PreferredVersion: metav1.GroupVersionForDiscovery{
+			GroupVersion: uploadTokenGroup + "/" + uploadTokenVersion,
+			Version:      uploadTokenVersion,
+		},
+	}
+	apiGroup.Versions = append(apiGroup.Versions, metav1.GroupVersionForDiscovery{
+		GroupVersion: uploadTokenGroup + "/" + uploadTokenVersion,
+		Version:      uploadTokenVersion,
+	})
+	apiGroup.ServerAddressByClientCIDRs = append(apiGroup.ServerAddressByClientCIDRs, metav1.ServerAddressByClientCIDR{
+		ClientCIDR:    "0.0.0.0/0",
+		ServerAddress: "",
+	})
+	apiGroup.Kind = "APIGroup"
+	return apiGroup
+}
+
+func (app *uploadApiApp) composeUploadTokenApi() {
+	objPointer := &cdiv1.UploadToken{}
+	objExample := reflect.ValueOf(objPointer).Elem().Interface()
+	objKind := "uploadtoken"
+
+	groupPath := fmt.Sprintf("/apis/%s/%s", uploadTokenGroup, uploadTokenVersion)
+	resourcePath := fmt.Sprintf("/apis/%s/%s", uploadTokenGroup, uploadTokenVersion)
+	createPath := fmt.Sprintf("/namespaces/{namespace:[a-z0-9][a-z0-9\\-]*}/%s", objKind)
+
+	uploadTokenWs := new(restful.WebService)
+	uploadTokenWs.Doc("The CDI Upload API.")
+	uploadTokenWs.Path(resourcePath)
+
+	uploadTokenWs.Route(uploadTokenWs.POST(createPath).
+		Produces("application/json").
+		Consumes("application/json").
+		Operation("createNamespaced"+objKind).
+		To(app.uploadHandler).Reads(objExample).Writes(objExample).
+		Doc("Create an UploadToken object.").
+		Returns(http.StatusOK, "OK", objExample).
+		Returns(http.StatusCreated, "Created", objExample).
+		Returns(http.StatusAccepted, "Accepted", objExample).
+		Returns(http.StatusUnauthorized, "Unauthorized", nil).
+		Param(uploadTokenWs.PathParameter("namespace", "Object name and auth scope, such as for teams and projects").Required(true)))
+
+	// Return empty api resource list.
+	// K8s expects to be able to retrieve a resource list for each aggregated
+	// app in order to discover what resources it provides. Without returning
+	// an empty list here, there's a bug in the k8s resource discovery that
+	// breaks kubectl's ability to reference short names for resources.
+	uploadTokenWs.Route(uploadTokenWs.GET("/").
+		Produces("application/json").Writes(metav1.APIResourceList{}).
+		To(func(request *restful.Request, response *restful.Response) {
+			list := &metav1.APIResourceList{}
+
+			list.Kind = "APIResourceList"
+			list.GroupVersion = uploadTokenGroup + "/" + uploadTokenVersion
+			list.APIVersion = uploadTokenVersion
+			list.APIResources = append(list.APIResources, metav1.APIResource{
+				Name:         "UploadToken",
+				SingularName: "uploadtoken",
+				Namespaced:   true,
+				Group:        uploadTokenGroup,
+				Version:      uploadTokenVersion,
+				Kind:         "UploadToken",
+				Verbs:        []string{"create"},
+				ShortNames:   []string{"ut", "uts"},
+			})
+			response.WriteAsJson(list)
+		}).
+		Operation("getAPIResources").
+		Doc("Get a CDI Upload API resources").
+		Returns(http.StatusOK, "OK", metav1.APIResourceList{}).
+		Returns(http.StatusNotFound, "Not Found", nil))
+
+	restful.Add(uploadTokenWs)
+
+	ws := new(restful.WebService)
+
+	// K8s needs the ability to query info about a specific API group
+	ws.Route(ws.GET(groupPath).
+		Produces("application/json").Writes(metav1.APIGroup{}).
+		To(func(request *restful.Request, response *restful.Response) {
+			response.WriteAsJson(uploadTokenAPIGroup())
+		}).
+		Operation("getAPIGroup").
+		Doc("Get a CDI Upload API Group").
+		Returns(http.StatusOK, "OK", metav1.APIGroup{}).
+		Returns(http.StatusNotFound, "Not Found", nil))
+
+	// K8s needs the ability to query the list of API groups this endpoint supports
+	ws.Route(ws.GET("apis").
+		Produces("application/json").Writes(metav1.APIGroupList{}).
+		To(func(request *restful.Request, response *restful.Response) {
+			list := &metav1.APIGroupList{}
+			list.Kind = "APIGroupList"
+			list.Groups = append(list.Groups, uploadTokenAPIGroup())
+			response.WriteAsJson(list)
+		}).
+		Operation("getAPIGroup").
+		Doc("Get a CDI Upload API GroupList").
+		Returns(http.StatusOK, "OK", metav1.APIGroupList{}).
+		Returns(http.StatusNotFound, "Not Found", nil))
+
+	restful.Add(ws)
+}
+
+func (app *uploadApiApp) createApiService() error {
+	namespace := GetNamespace()
+	apiName := uploadTokenVersion + "." + uploadTokenGroup
+
+	registerApiService := false
+
+	apiService, err := app.aggregatorClient.ApiregistrationV1beta1().APIServices().Get(apiName, metav1.GetOptions{})
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			registerApiService = true
+		} else {
+			return err
+		}
+	}
+
+	newApiService := &apiregistrationv1beta1.APIService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      apiName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				CDI_COMPONENT_LABEL: apiServiceName,
+			},
+		},
+		Spec: apiregistrationv1beta1.APIServiceSpec{
+			Service: &apiregistrationv1beta1.ServiceReference{
+				Namespace: namespace,
+				Name:      apiServiceName,
+			},
+			Group:                uploadTokenGroup,
+			Version:              uploadTokenVersion,
+			CABundle:             app.signingCertBytes,
+			GroupPriorityMinimum: 1000,
+			VersionPriority:      15,
+		},
+	}
+
+	if registerApiService {
+		_, err = app.aggregatorClient.ApiregistrationV1beta1().APIServices().Create(newApiService)
+		if err != nil {
+			return err
+		}
+	} else {
+		if apiService.Spec.Service != nil && apiService.Spec.Service.Namespace != namespace {
+			return fmt.Errorf("apiservice [%s] is already registered in a different namespace. Existing apiservice registration must be deleted before virt-api can proceed.", apiName)
+		}
+
+		// Always update spec to latest.
+		apiService.Spec = newApiService.Spec
+		_, err := app.aggregatorClient.ApiregistrationV1beta1().APIServices().Update(apiService)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (app *uploadApiApp) createWebhook() error {

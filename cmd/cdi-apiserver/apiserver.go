@@ -10,6 +10,7 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	aggregatorclient "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset"
 
 	"kubevirt.io/containerized-data-importer/pkg/apiserver"
 	. "kubevirt.io/containerized-data-importer/pkg/common"
@@ -61,7 +62,9 @@ func main() {
 		glog.Fatalf("Unable to get kube client: %v\n", errors.WithStack(err))
 	}
 
-	uploadApp, err := apiserver.NewUploadApiServer(defaultHost, defaultPort, client)
+	aggregatorClient := aggregatorclient.NewForConfigOrDie(cfg)
+
+	uploadApp, err := apiserver.NewUploadApiServer(defaultHost, defaultPort, client, aggregatorClient)
 	if err != nil {
 		glog.Fatalf("Upload api failed to initialize: %v\n", errors.WithStack(err))
 	}
