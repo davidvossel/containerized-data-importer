@@ -110,8 +110,8 @@ func (c *CloneController) handlePodDelete(obj interface{}) {
 	c.handlePodObject(obj, "delete")
 }
 
-func (c *CloneController) expectPodCreate(pvcKey string) {
-	c.podExpectations.ExpectCreations(pvcKey, 1)
+func (c *CloneController) expectPodCreate(pvcKey string, num int) {
+	c.podExpectations.ExpectCreations(pvcKey, num)
 }
 func (c *CloneController) observePodCreate(pvcKey string) {
 	c.podExpectations.CreationObserved(pvcKey)
@@ -315,31 +315,33 @@ func (c *CloneController) processPvcItem(pvc *v1.PersistentVolumeClaim) error {
 	}
 
 	if needsSync && (sourcePod == nil || targetPod == nil) {
+		creations := 0
+		var createErr error
 		//create random string to be used for pod labeling and hostpath name
 		if sourcePod == nil {
 			cr, err := getCloneRequestPVC(pvc)
 			if err != nil {
 				return err
 			}
-			// all checks passed, let's create the cloner pods!
-			c.expectPodCreate(pvcKey)
 			//create the source pod
 			sourcePod, err = CreateCloneSourcePod(c.clientset, c.cloneImage, c.verbose, c.pullPolicy, cr, pvc)
 			if err != nil {
-				c.observePodCreate(pvcKey)
-				return err
+				createErr = err
+			} else {
+				creations++
 			}
 		}
-		if targetPod == nil {
-			c.expectPodCreate(pvcKey)
+		if targetPod == nil && createErr == nil {
 			//create the target pod
 			targetPod, err = CreateCloneTargetPod(c.clientset, c.cloneImage, c.verbose, c.pullPolicy, pvc, sourcePod.ObjectMeta.Namespace)
 			if err != nil {
-				c.observePodCreate(pvcKey)
-				return err
+				createErr = err
+			} else {
+				creations++
 			}
 		}
-		return nil
+		c.expectPodCreate(pvcKey, creations)
+		return createErr
 	}
 
 	// update pvc with cloner pod name and optional cdi label
